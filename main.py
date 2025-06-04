@@ -1,4 +1,4 @@
-from machine import Pin
+from machine import Pin, reset
 import network
 import time
 from wifi import SSID, PASSWORD
@@ -20,77 +20,114 @@ TIEMPO_VERDE = 2.0
 def conectar_wifi():
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
-    wlan.connect(SSID, PASSWORD)
     
-    for i in range(10):
-        if wlan.isconnected():
-            break
-        print(f"Conectando WiFi... ({i+1}/10)")
-        time.sleep(2)
+    if not wlan.isconnected():
+        print('Conectando a la red...')
+        wlan.connect(SSID, PASSWORD)
+        
+        for i in range(10):
+            if wlan.isconnected():
+                break
+            print(f"Intentando conectar... ({i+1}/10)")
+            time.sleep(2)
     
     if wlan.isconnected():
-        print(f"¡WiFi OK! IP: {wlan.ifconfig()[0]}")
+        print('¡Conexión exitosa!')
+        print('Configuración de red:', wlan.ifconfig())
         return True
     else:
-        print("Error: No se pudo conectar al WiFi")
+        print('No se pudo conectar a la red')
         return False
 
+def inicializar_firebase(servidor):
+    # Forzar modo automático al inicio
+    servidor.establecer_modo_automatico()
+    # Establecer estado inicial (rojo)
+    estado_inicial = {"rojo": True, "amarillo": False, "verde": False}
+    servidor.actualizar_estado(estado_inicial)
+    return estado_inicial
+
 def ciclo_semaforo(servidor):
+    print("Iniciando ciclo del semáforo...")
+    estado_actual = {"rojo": True, "amarillo": False, "verde": False}
+    
     while True:
-        modo = servidor.obtener_modo_control()
+        try:
+            modo = servidor.obtener_modo_control()
+            print("Modo actual:", modo)
+            
+            if modo == "automatico":
+                # Modo automático (ciclo normal)
+                # 1. FASE ROJA (Detener)
+                estado_actual = {"rojo": True, "amarillo": False, "verde": False}
+                led_rojo.value(1)
+                led_amarillo.value(0)
+                led_verde.value(0)
+                servidor.actualizar_estado(estado_actual)
+                print("Estado: ROJO - Detener")
+                time.sleep(TIEMPO_ROJO)
+                
+                # 2. FASE AMARILLA (Precaución ANTES de verde)
+                estado_actual = {"rojo": False, "amarillo": True, "verde": False}
+                led_rojo.value(0)
+                led_amarillo.value(1)
+                servidor.actualizar_estado(estado_actual)
+                print("Estado: AMARILLO - Precaución")
+                time.sleep(TIEMPO_AMARILLO)
+                
+                # 3. FASE VERDE (Avanzar)
+                estado_actual = {"rojo": False, "amarillo": False, "verde": True}
+                led_amarillo.value(0)
+                led_verde.value(1)
+                servidor.actualizar_estado(estado_actual)
+                print("Estado: VERDE - Avanzar")
+                time.sleep(TIEMPO_VERDE)
+                
+                # 4. FASE AMARILLA (Precaución ANTES de rojo)
+                estado_actual = {"rojo": False, "amarillo": True, "verde": False}
+                led_verde.value(0)
+                led_amarillo.value(1)
+                servidor.actualizar_estado(estado_actual)
+                print("Estado: AMARILLO - Precaución")
+                time.sleep(TIEMPO_AMARILLO)
+            
+            else:
+                # Modo manual (controlado desde la web)
+                estado_firebase = servidor.obtener_estado_actual()
+                if estado_firebase:
+                    led_rojo.value(1 if estado_firebase.get("rojo") == "ON" else 0)
+                    led_amarillo.value(1 if estado_firebase.get("amarillo") == "ON" else 0)
+                    led_verde.value(1 if estado_firebase.get("verde") == "ON" else 0)
+                    estado_actual = {
+                        "rojo": estado_firebase.get("rojo") == "ON",
+                        "amarillo": estado_firebase.get("amarillo") == "ON",
+                        "verde": estado_firebase.get("verde") == "ON"
+                    }
+                time.sleep(0.5)
         
-        if modo == "automatico":
-            # Modo automático (ciclo normal)
-            # 1. FASE ROJA (Detener)
-            estado = {"rojo": True, "amarillo": False, "verde": False}
-            led_rojo.value(1)
-            led_amarillo.value(0)
-            led_verde.value(0)
-            servidor.actualizar_estado(estado)
-            print("Estado: ROJO - Detener")
-            time.sleep(TIEMPO_ROJO)
-            
-            # 2. FASE AMARILLA (Precaución ANTES de verde)
-            estado = {"rojo": False, "amarillo": True, "verde": False}
-            led_rojo.value(0)
-            led_amarillo.value(1)
-            servidor.actualizar_estado(estado)
-            print("Estado: AMARILLO - Precaución")
-            time.sleep(TIEMPO_AMARILLO)
-            
-            # 3. FASE VERDE (Avanzar)
-            estado = {"rojo": False, "amarillo": False, "verde": True}
-            led_amarillo.value(0)
-            led_verde.value(1)
-            servidor.actualizar_estado(estado)
-            print("Estado: VERDE - Avanzar")
-            time.sleep(TIEMPO_VERDE)
-            
-            # 4. FASE AMARILLA (Precaución ANTES de rojo)
-            estado = {"rojo": False, "amarillo": True, "verde": False}
-            led_verde.value(0)
-            led_amarillo.value(1)
-            servidor.actualizar_estado(estado)
-            print("Estado: AMARILLO - Precaución")
-            time.sleep(TIEMPO_AMARILLO)
-        
-        else:
-            # Modo manual (controlado desde la web)
-            estado_actual = {
-                "rojo": led_rojo.value() == 1,
-                "amarillo": led_amarillo.value() == 1,
-                "verde": led_verde.value() == 1
-            }
-            servidor.sincronizar_estado_actual(estado_actual)
-            time.sleep(0.1)  # Espera corta para respuesta rápida
+        except Exception as e:
+            print("Error en el ciclo:", str(e))
+            time.sleep(5)
 
 # Programa principal
+print("Iniciando programa...")
 if not conectar_wifi():
     print("Reiniciando por fallo de conexión...")
-    machine.reset()
+    reset()
 
 # Crear instancia del servidor Firebase
-servidor_fb = ServidorFirebase(FIREBASE_URL)
+try:
+    servidor_fb = ServidorFirebase(FIREBASE_URL)
+    print("Servidor Firebase inicializado")
+    # Inicializar Firebase con valores por defecto
+    estado_inicial = inicializar_firebase(servidor_fb)
+    # Establecer estado inicial en los LEDs
+    led_rojo.value(1 if estado_inicial["rojo"] else 0)
+    led_amarillo.value(1 if estado_inicial["amarillo"] else 0)
+    led_verde.value(1 if estado_inicial["verde"] else 0)
+except Exception as e:
+    print("Error al inicializar Firebase:", str(e))
+    reset()
 
 # Iniciar ciclo del semáforo
 ciclo_semaforo(servidor_fb)
